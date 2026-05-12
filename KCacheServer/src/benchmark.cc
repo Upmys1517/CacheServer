@@ -8,6 +8,7 @@
 #include <algorithm>
 #include <atomic>
 #include <chrono>
+#include <cmath>
 #include <cstdlib>
 #include <cstring>
 #include <iomanip>
@@ -32,6 +33,7 @@ struct BenchmarkConfig {
     int keySpace = 1000;             // 唯一 key 的数量（用于 Zipf 式均匀分布）
     double readRatio = 0.8;          // GET 请求占比（其余为 SET）
     int valueSize = 64;              // SET 生成的 value 长度（字节）
+    double zipfAlpha = 0.0;          // Zipf 分布参数（0 = 均匀分布，典型值 0.5~1.5）
 };
 
 // 基准测试结果结构体
@@ -114,8 +116,17 @@ static void benchmarkWorker(int connId,
 
     // 初始化随机数生成器（种子加上 connId 避免各线程同序列）
     std::mt19937 rng(std::random_device{}() + connId);
-    std::uniform_int_distribution<int> keyDist(0, cfg.keySpace - 1);
     std::uniform_real_distribution<double> opDist(0.0, 1.0);
+
+    // Zipf 分布：预计算权重并用 discrete_distribution 做 O(1) 采样
+    std::unique_ptr<std::discrete_distribution<int>> keyDist;
+    if (cfg.zipfAlpha > 0.0) {
+        std::vector<double> weights(static_cast<size_t>(cfg.keySpace));
+        for (int i = 0; i < cfg.keySpace; ++i) {
+            weights[i] = 1.0 / std::pow(static_cast<double>(i + 1), cfg.zipfAlpha);
+        }
+        keyDist.reset(new std::discrete_distribution<int>(weights.begin(), weights.end()));
+    }
 
     std::string recvBuf;           // 响应接收缓冲区（复用，减少分配）
     std::vector<double> localLatencies;
@@ -126,7 +137,14 @@ static void benchmarkWorker(int connId,
 
     // 执行请求循环
     for (int i = 0; i < cfg.requestsPerConn; ++i) {
-        std::string key = makeKey(keyDist(rng));
+        // 根据是否启用 Zipf 选择采样方式
+        int keyIdx;
+        if (keyDist) {
+            keyIdx = (*keyDist)(rng);       // Zipf 分布采样，O(1)
+        } else {
+            keyIdx = rng() % cfg.keySpace;  // 均匀分布
+        }
+        std::string key = makeKey(keyIdx);
         std::string request;
 
         // 根据 readRatio 决定本次执行 GET 还是 SET
@@ -207,6 +225,7 @@ static BenchmarkResult runBenchmark(const BenchmarkConfig& cfg) {
               << "  key space: " << cfg.keySpace << "\n"
               << "  read ratio: " << (cfg.readRatio * 100) << "%\n"
               << "  value size: " << cfg.valueSize << " bytes\n"
+              << "  zipf alpha: " << cfg.zipfAlpha << (cfg.zipfAlpha == 0.0 ? " (uniform)" : "") << "\n"
               << "Running..." << std::endl;
 
     auto t1 = Clock::now();  // 记录测试开始时间
@@ -302,6 +321,7 @@ int main(int argc, char* argv[]) {
                       << "  --keyspace N         Number of unique keys (default: 1000)\n"
                       << "  --read-ratio R       Fraction of GET vs SET, 0.0-1.0 (default: 0.8)\n"
                       << "  --value-size N       Value size in bytes (default: 64)\n"
+                      << "  --zipf-alpha A       Zipf skew parameter, 0=uniform (default: 0.0)\n"
                       << "  --help               Show this help\n"
                       << std::flush;
             return 0;
@@ -321,7 +341,8 @@ int main(int argc, char* argv[]) {
         else if (arg == "--requests")   cfg.requestsPerConn = std::atoi(nextVal());
         else if (arg == "--keyspace")   cfg.keySpace = std::atoi(nextVal());
         else if (arg == "--read-ratio") cfg.readRatio = std::atof(nextVal());
-        else if (arg == "--value-size") cfg.valueSize = std::atoi(nextVal());
+        else if (arg == "--value-size")  cfg.valueSize = std::atoi(nextVal());
+        else if (arg == "--zipf-alpha") cfg.zipfAlpha = std::atof(nextVal());
         else {
             std::cerr << "Unknown option: " << arg << "\n";
             return 1;

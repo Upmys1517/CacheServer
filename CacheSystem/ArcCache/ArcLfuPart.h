@@ -3,19 +3,22 @@
 #include "ArcCacheNode.h"
 #include <unordered_map>
 #include <map>
+#include <list>
 #include <mutex>
 
-namespace KamaCache 
+namespace KamaCache
 {
 
 template<typename Key, typename Value>
-class ArcLfuPart 
+class ArcLfuPart
 {
 public:
     using NodeType = ArcNode<Key, Value>;
     using NodePtr = std::shared_ptr<NodeType>;
     using NodeMap = std::unordered_map<Key, NodePtr>;
-    using FreqMap = std::map<size_t, std::list<NodePtr>>;
+    using FreqList = std::list<NodePtr>;
+    using FreqMap = std::map<size_t, FreqList>;
+    using KeyToIter = std::unordered_map<Key, typename FreqList::iterator>;
 
     explicit ArcLfuPart(size_t capacity, size_t transformThreshold)
         : capacity_(capacity)
@@ -26,25 +29,25 @@ public:
         initializeLists();
     }
 
-    bool put(Key key, Value value) 
+    bool put(Key key, Value value)
     {
-        if (capacity_ == 0) 
+        if (capacity_ == 0)
             return false;
 
         std::lock_guard<std::mutex> lock(mutex_);
         auto it = mainCache_.find(key);
-        if (it != mainCache_.end()) 
+        if (it != mainCache_.end())
         {
             return updateExistingNode(it->second, value);
         }
         return addNewNode(key, value);
     }
 
-    bool get(Key key, Value& value) 
+    bool get(Key key, Value& value)
     {
         std::lock_guard<std::mutex> lock(mutex_);
         auto it = mainCache_.find(key);
-        if (it != mainCache_.end()) 
+        if (it != mainCache_.end())
         {
             updateNodeFrequency(it->second);
             value = it->second->getValue();
@@ -61,7 +64,12 @@ public:
         {
             size_t freq = it->second->getAccessCount();
             auto& freqList = freqMap_[freq];
-            freqList.remove(it->second);
+            auto iter = keyToIter_.find(key);
+            if (iter != keyToIter_.end())
+            {
+                freqList.erase(iter->second);          // O(1)
+                keyToIter_.erase(iter);
+            }
             if (freqList.empty())
             {
                 freqMap_.erase(freq);
@@ -81,13 +89,15 @@ public:
 
     bool contain(Key key)
     {
+        std::lock_guard<std::mutex> lock(mutex_);
         return mainCache_.find(key) != mainCache_.end();
     }
 
-    bool checkGhost(Key key) 
+    bool checkGhost(Key key)
     {
+        std::lock_guard<std::mutex> lock(mutex_);
         auto it = ghostCache_.find(key);
-        if (it != ghostCache_.end()) 
+        if (it != ghostCache_.end())
         {
             removeFromGhost(it->second);
             ghostCache_.erase(it);
@@ -96,12 +106,16 @@ public:
         return false;
     }
 
-    void increaseCapacity() { ++capacity_; }
-    
-    bool decreaseCapacity() 
+    void increaseCapacity()
+    {
+        std::lock_guard<std::mutex> lock(mutex_);
+        ++capacity_;
+    }
+
+    bool decreaseCapacity()
     {
         if (capacity_ <= 0) return false;
-        if (mainCache_.size() == capacity_) 
+        if (mainCache_.size() == capacity_)
         {
             evictLeastFrequent();
         }
@@ -109,8 +123,47 @@ public:
         return true;
     }
 
+    // 仅更新已存在的 key，不存在则返回 false（用于避免新 key 误入 LFU）
+    bool updateIfExists(Key key, const Value& value)
+    {
+        std::lock_guard<std::mutex> lock(mutex_);
+        auto it = mainCache_.find(key);
+        if (it != mainCache_.end())
+        {
+            updateExistingNode(it->second, value);
+            return true;
+        }
+        return false;
+    }
+
+    // 接收从 LRU 部分晋升过来的已存在节点（非拷贝）
+    void addExistingNode(NodePtr node)
+    {
+        std::lock_guard<std::mutex> lock(mutex_);
+        if (mainCache_.find(node->getKey()) != mainCache_.end())
+        {
+            return;  // 已存在，忽略（理论上不应发生）
+        }
+        if (mainCache_.size() >= capacity_)
+        {
+            evictLeastFrequent();
+        }
+
+        node->accessCount_ = 1;  // 在新 part 中重新计数
+        mainCache_[node->getKey()] = node;
+
+        if (freqMap_.find(1) == freqMap_.end())
+        {
+            freqMap_[1] = FreqList();
+        }
+        freqMap_[1].push_back(node);
+        keyToIter_[node->getKey()] = std::prev(freqMap_[1].end());
+        if (minFreq_ == 0) minFreq_ = 1;
+        else minFreq_ = std::min(minFreq_, size_t(1));
+    }
+
 private:
-    void initializeLists() 
+    void initializeLists()
     {
         ghostHead_ = std::make_shared<NodeType>();
         ghostTail_ = std::make_shared<NodeType>();
@@ -118,107 +171,108 @@ private:
         ghostTail_->prev_ = ghostHead_;
     }
 
-    bool updateExistingNode(NodePtr node, const Value& value) 
+    bool updateExistingNode(NodePtr node, const Value& value)
     {
         node->setValue(value);
         updateNodeFrequency(node);
         return true;
     }
 
-    bool addNewNode(const Key& key, const Value& value) 
+    bool addNewNode(const Key& key, const Value& value)
     {
-        if (mainCache_.size() >= capacity_) 
+        if (mainCache_.size() >= capacity_)
         {
             evictLeastFrequent();
         }
 
         NodePtr newNode = std::make_shared<NodeType>(key, value);
         mainCache_[key] = newNode;
-        
-        // 将新节点添加到频率为1的列表中
-        if (freqMap_.find(1) == freqMap_.end()) 
+
+        if (freqMap_.find(1) == freqMap_.end())
         {
-            freqMap_[1] = std::list<NodePtr>();
+            freqMap_[1] = FreqList();
         }
         freqMap_[1].push_back(newNode);
-        minFreq_ = 1;
-        
+        keyToIter_[key] = std::prev(freqMap_[1].end());  // O(1) 记录迭代器
+        if (minFreq_ == 0) minFreq_ = 1;
+        else minFreq_ = std::min(minFreq_, size_t(1));
+
         return true;
     }
 
-    void updateNodeFrequency(NodePtr node) 
+    void updateNodeFrequency(NodePtr node)
     {
         size_t oldFreq = node->getAccessCount();
         node->incrementAccessCount();
         size_t newFreq = node->getAccessCount();
 
-        // 从旧频率列表中移除
-        auto& oldList = freqMap_[oldFreq];
-        oldList.remove(node);
-        if (oldList.empty()) 
+        // O(1)：用迭代器直接从旧频率链表中删除
+        auto iter = keyToIter_.find(node->getKey());
+        if (iter != keyToIter_.end())
         {
-            freqMap_.erase(oldFreq);
-            if (oldFreq == minFreq_) 
+            auto& oldList = freqMap_[oldFreq];
+            oldList.erase(iter->second);
+            if (oldList.empty())
             {
-                minFreq_ = newFreq;
+                freqMap_.erase(oldFreq);
+                if (oldFreq == minFreq_)
+                {
+                    minFreq_ = newFreq;
+                }
             }
         }
 
-        // 添加到新频率列表
-        if (freqMap_.find(newFreq) == freqMap_.end()) 
+        // 添加到新频率链表
+        if (freqMap_.find(newFreq) == freqMap_.end())
         {
-            freqMap_[newFreq] = std::list<NodePtr>();
+            freqMap_[newFreq] = FreqList();
         }
         freqMap_[newFreq].push_back(node);
+        keyToIter_[node->getKey()] = std::prev(freqMap_[newFreq].end());
     }
 
-    void evictLeastFrequent() 
+    void evictLeastFrequent()
     {
-        if (freqMap_.empty()) 
+        if (freqMap_.empty())
             return;
 
-        // 获取最小频率的列表
         auto& minFreqList = freqMap_[minFreq_];
-        if (minFreqList.empty()) 
+        if (minFreqList.empty())
             return;
 
-        // 移除最少使用的节点
         NodePtr leastNode = minFreqList.front();
         minFreqList.pop_front();
+        keyToIter_.erase(leastNode->getKey());
 
-        // 如果该频率的列表为空，则删除该频率项
-        if (minFreqList.empty()) 
+        if (minFreqList.empty())
         {
             freqMap_.erase(minFreq_);
-            // 更新最小频率
-            if (!freqMap_.empty()) 
+            if (!freqMap_.empty())
             {
                 minFreq_ = freqMap_.begin()->first;
             }
         }
 
-        // 将节点移到幽灵缓存
-        if (ghostCache_.size() >= ghostCapacity_) 
+        if (ghostCache_.size() >= ghostCapacity_)
         {
             removeOldestGhost();
         }
         addToGhost(leastNode);
-        
-        // 从主缓存中移除
+
         mainCache_.erase(leastNode->getKey());
     }
 
-    void removeFromGhost(NodePtr node) 
+    void removeFromGhost(NodePtr node)
     {
         if (!node->prev_.expired() && node->next_) {
             auto prev = node->prev_.lock();
             prev->next_ = node->next_;
-        node->next_->prev_ = node->prev_;
-            node->next_ = nullptr; // 清空指针，防止悬垂引用
+            node->next_->prev_ = node->prev_;
+            node->next_ = nullptr;
         }
     }
 
-    void addToGhost(NodePtr node) 
+    void addToGhost(NodePtr node)
     {
         node->next_ = ghostTail_;
         node->prev_ = ghostTail_->prev_;
@@ -229,10 +283,10 @@ private:
         ghostCache_[node->getKey()] = node;
     }
 
-    void removeOldestGhost() 
+    void removeOldestGhost()
     {
         NodePtr oldestGhost = ghostHead_->next_;
-        if (oldestGhost != ghostTail_) 
+        if (oldestGhost != ghostTail_)
         {
             removeFromGhost(oldestGhost);
             ghostCache_.erase(oldestGhost->getKey());
@@ -249,7 +303,8 @@ private:
     NodeMap mainCache_;
     NodeMap ghostCache_;
     FreqMap freqMap_;
-    
+    KeyToIter keyToIter_;
+
     NodePtr ghostHead_;
     NodePtr ghostTail_;
 };

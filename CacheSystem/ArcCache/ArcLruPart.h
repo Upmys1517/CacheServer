@@ -4,11 +4,11 @@
 #include <unordered_map>
 #include <mutex>
 
-namespace KamaCache 
+namespace KamaCache
 {
 
 template<typename Key, typename Value>
-class ArcLruPart 
+class ArcLruPart
 {
 public:
     using NodeType = ArcNode<Key, Value>;
@@ -23,27 +23,44 @@ public:
         initializeLists();
     }
 
-    bool put(Key key, Value value) 
+    bool put(Key key, Value value)
     {
         if (capacity_ == 0) return false;
-        
+
         std::lock_guard<std::mutex> lock(mutex_);
         auto it = mainCache_.find(key);
-        if (it != mainCache_.end()) 
+        if (it != mainCache_.end())
         {
             return updateExistingNode(it->second, value);
         }
         return addNewNode(key, value);
     }
 
-    bool get(Key key, Value& value, bool& shouldTransform) 
+    // 原有 get：不提取节点
+    bool get(Key key, Value& value, bool& shouldTransform)
+    {
+        return getInternal(key, value, shouldTransform, nullptr);
+    }
+
+    // 带节点提取的 get：当 shouldTransform 时，节点从 LRU 移除并通过 outNode 返回
+    bool get(Key key, Value& value, bool& shouldTransform, NodePtr* outNode)
+    {
+        return getInternal(key, value, shouldTransform, outNode);
+    }
+
+    bool contain(Key key)
+    {
+        std::lock_guard<std::mutex> lock(mutex_);
+        return mainCache_.find(key) != mainCache_.end();
+    }
+
+    bool updateIfExists(Key key, const Value& value)
     {
         std::lock_guard<std::mutex> lock(mutex_);
         auto it = mainCache_.find(key);
-        if (it != mainCache_.end()) 
+        if (it != mainCache_.end())
         {
-            shouldTransform = updateNodeAccess(it->second);
-            value = it->second->getValue();
+            updateExistingNode(it->second, value);
             return true;
         }
         return false;
@@ -78,9 +95,13 @@ public:
         return false;
     }
 
-    void increaseCapacity() { ++capacity_; }
-    
-    bool decreaseCapacity() 
+    void increaseCapacity()
+    {
+        std::lock_guard<std::mutex> lock(mutex_);
+        ++capacity_;
+    }
+
+    bool decreaseCapacity()
     {
         if (capacity_ <= 0) return false;
         if (mainCache_.size() == capacity_) {
@@ -91,7 +112,7 @@ public:
     }
 
 private:
-    void initializeLists() 
+    void initializeLists()
     {
         mainHead_ = std::make_shared<NodeType>();
         mainTail_ = std::make_shared<NodeType>();
@@ -104,18 +125,37 @@ private:
         ghostTail_->prev_ = ghostHead_;
     }
 
-    bool updateExistingNode(NodePtr node, const Value& value) 
+    bool getInternal(Key key, Value& value, bool& shouldTransform, NodePtr* outNode)
+    {
+        std::lock_guard<std::mutex> lock(mutex_);
+        auto it = mainCache_.find(key);
+        if (it != mainCache_.end())
+        {
+            shouldTransform = updateNodeAccess(it->second);
+            value = it->second->getValue();
+            if (shouldTransform && outNode)
+            {
+                *outNode = it->second;
+                removeFromMain(*outNode);
+                mainCache_.erase(it);
+            }
+            return true;
+        }
+        return false;
+    }
+
+    bool updateExistingNode(NodePtr node, const Value& value)
     {
         node->setValue(value);
         moveToFront(node);
         return true;
     }
 
-    bool addNewNode(const Key& key, const Value& value) 
+    bool addNewNode(const Key& key, const Value& value)
     {
-        if (mainCache_.size() >= capacity_) 
-        {   
-            evictLeastRecent(); // 驱逐最近最少访问
+        if (mainCache_.size() >= capacity_)
+        {
+            evictLeastRecent();
         }
 
         NodePtr newNode = std::make_shared<NodeType>(key, value);
@@ -124,28 +164,25 @@ private:
         return true;
     }
 
-    bool updateNodeAccess(NodePtr node) 
+    bool updateNodeAccess(NodePtr node)
     {
         moveToFront(node);
         node->incrementAccessCount();
         return node->getAccessCount() >= transformThreshold_;
     }
 
-    void moveToFront(NodePtr node) 
+    void moveToFront(NodePtr node)
     {
-        // 先从当前位置移除
         if (!node->prev_.expired() && node->next_) {
             auto prev = node->prev_.lock();
             prev->next_ = node->next_;
             node->next_->prev_ = node->prev_;
-            node->next_ = nullptr; // 清空指针，防止悬垂引用
+            node->next_ = nullptr;
         }
-        
-        // 添加到头部
         addToFront(node);
     }
 
-    void addToFront(NodePtr node) 
+    void addToFront(NodePtr node)
     {
         node->next_ = mainHead_->next_;
         node->prev_ = mainHead_;
@@ -153,86 +190,77 @@ private:
         mainHead_->next_ = node;
     }
 
-    void evictLeastRecent() 
+    void evictLeastRecent()
     {
         NodePtr leastRecent = mainTail_->prev_.lock();
-        if (!leastRecent || leastRecent == mainHead_) 
+        if (!leastRecent || leastRecent == mainHead_)
             return;
 
-        // 从主链表中移除
         removeFromMain(leastRecent);
 
-        // 添加到幽灵缓存
-        if (ghostCache_.size() >= ghostCapacity_) 
+        if (ghostCache_.size() >= ghostCapacity_)
         {
             removeOldestGhost();
         }
         addToGhost(leastRecent);
 
-        // 从主缓存映射中移除
         mainCache_.erase(leastRecent->getKey());
     }
 
-    void removeFromMain(NodePtr node) 
+    void removeFromMain(NodePtr node)
     {
         if (!node->prev_.expired() && node->next_) {
             auto prev = node->prev_.lock();
             prev->next_ = node->next_;
             node->next_->prev_ = node->prev_;
-            node->next_ = nullptr; // 清空指针，防止悬垂引用
+            node->next_ = nullptr;
         }
     }
 
-    void removeFromGhost(NodePtr node) 
+    void removeFromGhost(NodePtr node)
     {
         if (!node->prev_.expired() && node->next_) {
             auto prev = node->prev_.lock();
             prev->next_ = node->next_;
             node->next_->prev_ = node->prev_;
-            node->next_ = nullptr; // 清空指针，防止悬垂引用
+            node->next_ = nullptr;
         }
     }
 
-    void addToGhost(NodePtr node) 
+    void addToGhost(NodePtr node)
     {
-        // 重置节点的访问计数
         node->accessCount_ = 1;
-        
-        // 添加到幽灵缓存的头部
+
         node->next_ = ghostHead_->next_;
         node->prev_ = ghostHead_;
         ghostHead_->next_->prev_ = node;
         ghostHead_->next_ = node;
-        
-        // 添加到幽灵缓存映射
+
         ghostCache_[node->getKey()] = node;
     }
 
-    void removeOldestGhost() 
+    void removeOldestGhost()
     {
-        // 使用lock()方法，并添加null检查
         NodePtr oldestGhost = ghostTail_->prev_.lock();
-        if (!oldestGhost || oldestGhost == ghostHead_) 
+        if (!oldestGhost || oldestGhost == ghostHead_)
             return;
 
         removeFromGhost(oldestGhost);
         ghostCache_.erase(oldestGhost->getKey());
     }
-    
+
 
 private:
     size_t capacity_;
     size_t ghostCapacity_;
-    size_t transformThreshold_; // 转换门槛值
+    size_t transformThreshold_;
     std::mutex mutex_;
 
-    NodeMap mainCache_; // key -> ArcNode
+    NodeMap mainCache_;
     NodeMap ghostCache_;
-    
-    // 主链表
+
     NodePtr mainHead_;
     NodePtr mainTail_;
-    // 淘汰链表
     NodePtr ghostHead_;
     NodePtr ghostTail_;
 };

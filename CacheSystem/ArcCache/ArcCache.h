@@ -5,11 +5,11 @@
 #include "ArcLfuPart.h"
 #include <memory>
 
-namespace KamaCache 
+namespace KamaCache
 {
 
 template<typename Key, typename Value>
-class KArcCache : public KICachePolicy<Key, Value> 
+class KArcCache : public KICachePolicy<Key, Value>
 {
 public:
     explicit KArcCache(size_t capacity = 10, size_t transformThreshold = 2)
@@ -21,31 +21,31 @@ public:
 
     ~KArcCache() override = default;
 
-    void put(Key key, Value value) override 
+    void put(Key key, Value value) override
     {
         checkGhostCaches(key);
 
-        // 检查 LFU 部分是否存在该键
-        bool inLfu = lfuPart_->contain(key);
-        // 更新 LRU 部分缓存
+        // 先查 LFU（已被晋升的热 key），再查 LRU，都不存在则写入 LRU
+        if (lfuPart_->updateIfExists(key, value))
+            return;
+        if (lruPart_->updateIfExists(key, value))
+            return;
         lruPart_->put(key, value);
-        // 如果 LFU 部分存在该键，则更新 LFU 部分
-        if (inLfu) 
-        {
-            lfuPart_->put(key, value);
-        }
     }
 
-    bool get(Key key, Value& value) override 
+    bool get(Key key, Value& value) override
     {
         checkGhostCaches(key);
 
         bool shouldTransform = false;
-        if (lruPart_->get(key, value, shouldTransform)) 
+        typename ArcLruPart<Key, Value>::NodePtr extractedNode;
+
+        // 先查 LRU，命中且达到晋升门槛则把节点从 LRU 移动到 LFU（非拷贝）
+        if (lruPart_->get(key, value, shouldTransform, &extractedNode))
         {
-            if (shouldTransform) 
+            if (shouldTransform && extractedNode)
             {
-                lfuPart_->put(key, value);
+                lfuPart_->addExistingNode(extractedNode);
             }
             return true;
         }
@@ -66,20 +66,20 @@ public:
     }
 
 private:
-    bool checkGhostCaches(Key key) 
+    bool checkGhostCaches(Key key)
     {
         bool inGhost = false;
-        if (lruPart_->checkGhost(key)) 
+        if (lruPart_->checkGhost(key))
         {
-            if (lfuPart_->decreaseCapacity()) 
+            if (lfuPart_->decreaseCapacity())
             {
                 lruPart_->increaseCapacity();
             }
             inGhost = true;
-        } 
-        else if (lfuPart_->checkGhost(key)) 
+        }
+        else if (lfuPart_->checkGhost(key))
         {
-            if (lruPart_->decreaseCapacity()) 
+            if (lruPart_->decreaseCapacity())
             {
                 lfuPart_->increaseCapacity();
             }
