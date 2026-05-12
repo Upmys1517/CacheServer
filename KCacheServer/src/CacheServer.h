@@ -10,6 +10,9 @@
 #include "InetAddress.h"
 #include "EventLoop.h"
 
+
+
+
 namespace KamaCache {
 template <typename Key, typename Value>
 class KICachePolicy;
@@ -30,8 +33,8 @@ public:
         uint64_t pings = 0;
     };
 
-    CacheServer(muduo::EventLoop* loop,
-                const muduo::InetAddress& addr,
+    CacheServer(EventLoop* loop,
+                const InetAddress& addr,
                 const std::string& name,
                 std::unique_ptr<KamaCache::KICachePolicy<std::string, std::string>> cache,
                 int threadNum = 0);
@@ -43,14 +46,14 @@ public:
     uint64_t uptimeSec() const;
 
 private:
-    void onConnection(const muduo::TcpConnectionPtr& conn);
-    void onMessage(const muduo::TcpConnectionPtr& conn,
-                   muduo::Buffer* buf,
-                   muduo::Timestamp time);
+    void onConnection(const TcpConnectionPtr& conn);
+    void onMessage(const TcpConnectionPtr& conn,
+                   Buffer* buf,
+                   Timestamp time);
 
     std::string processCommand(const struct Request& req);
 
-    muduo::TcpServer server_;
+    TcpServer server_;
     std::unique_ptr<KamaCache::KICachePolicy<std::string, std::string>> cache_;
 
     // Statistics

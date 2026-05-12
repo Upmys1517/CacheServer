@@ -1,4 +1,5 @@
 #include "CacheServer.h"
+#include "CachePolicy.h"
 #include "Logger.h"
 
 #include <cstdlib>
@@ -78,8 +79,8 @@ int main(int argc, char* argv[]) {
         return 1;
     }
 
-    muduo::EventLoop loop;
-    muduo::InetAddress addr(static_cast<uint16_t>(port));
+    EventLoop loop;
+    InetAddress addr(static_cast<uint16_t>(port));
 
     KCacheServer::CacheServer server(&loop, addr, "KCacheServer",
                                      std::move(cache), threads);

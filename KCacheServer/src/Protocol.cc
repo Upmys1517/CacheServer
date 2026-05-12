@@ -15,8 +15,8 @@ std::string Protocol::toUpper(const std::string& s) {
 }
 
 void Protocol::parseLine(const std::string& line, Request* req) {
+    *req = Request{};
     if (line.empty()) {
-        req->cmd = Command::UNKNOWN;
         return;
     }
 
@@ -80,7 +80,7 @@ void Protocol::parseLine(const std::string& line, Request* req) {
     req->cmd = Command::UNKNOWN;
 }
 
-bool Protocol::parse(muduo::Buffer* buf, Request* req) {
+bool Protocol::parse(Buffer* buf, Request* req) {
     const char* data = buf->peek();
     size_t len = buf->readableBytes();
 

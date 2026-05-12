@@ -9,14 +9,13 @@
 #include "LruCache.h"
 #include "LfuCache.h"
 #include "ArcCache/ArcCache.h"
-
 #include <chrono>
 
 namespace KCacheServer {
 
 CacheServer::CacheServer(
-    muduo::EventLoop* loop,
-    const muduo::InetAddress& addr,
+    EventLoop* loop,
+    const InetAddress& addr,
     const std::string& name,
     std::unique_ptr<KamaCache::KICachePolicy<std::string, std::string>> cache,
     int threadNum)
@@ -24,9 +23,9 @@ CacheServer::CacheServer(
     , cache_(std::move(cache))
 {
     server_.setConnectionCallback(
-        [this](const muduo::TcpConnectionPtr& conn) { onConnection(conn); });
+        [this](const TcpConnectionPtr& conn) { onConnection(conn); });
     server_.setMessageCallback(
-        [this](const muduo::TcpConnectionPtr& conn, muduo::Buffer* buf, muduo::Timestamp time) {
+        [this](const TcpConnectionPtr& conn, Buffer* buf, Timestamp time) {
             onMessage(conn, buf, time);
         });
     server_.setThreadNum(threadNum);
@@ -58,7 +57,7 @@ uint64_t CacheServer::uptimeSec() const {
     return static_cast<uint64_t>(now - startTimeSec_);
 }
 
-void CacheServer::onConnection(const muduo::TcpConnectionPtr& conn) {
+void CacheServer::onConnection(const TcpConnectionPtr& conn) {
     if (conn->connected()) {
         connections_++;
         LOG_INFO("Connection UP : %s [%s]",
@@ -71,9 +70,9 @@ void CacheServer::onConnection(const muduo::TcpConnectionPtr& conn) {
     }
 }
 
-void CacheServer::onMessage(const muduo::TcpConnectionPtr& conn,
-                            muduo::Buffer* buf,
-                            muduo::Timestamp /*time*/) {
+void CacheServer::onMessage(const TcpConnectionPtr& conn,
+                            Buffer* buf,
+                            Timestamp /*time*/) {
     Request req;
     while (Protocol::parse(buf, &req)) {
         if (req.cmd == Command::QUIT) {
@@ -120,15 +119,9 @@ std::string CacheServer::processCommand(const Request& req) {
         if (req.key.empty()) {
             return Protocol::encodeError("DEL requires a key");
         }
-        // Check if key exists, then overwrite with sentinel
-        std::string dummy;
-        if (cache_->get(req.key, dummy)) {
-            cache_->put(req.key, "");
-            dels_++;
-            return Protocol::encodeOk();
-        } else {
-            return Protocol::encodeNil();
-        }
+        cache_->remove(req.key);
+        dels_++;
+        return Protocol::encodeOk();
     }
 
     case Command::STATS: {

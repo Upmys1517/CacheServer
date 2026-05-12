@@ -1,0 +1,4 @@
+/home/upmys/projects/CacheServer/KCacheServer/build/CMakeFiles/kcacheserver.dir
+/home/upmys/projects/CacheServer/KCacheServer/build/CMakeFiles/benchmark.dir
+/home/upmys/projects/CacheServer/KCacheServer/build/CMakeFiles/edit_cache.dir
+/home/upmys/projects/CacheServer/KCacheServer/build/CMakeFiles/rebuild_cache.dir

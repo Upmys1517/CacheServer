@@ -3,9 +3,7 @@
 #include <cstdint>
 #include <string>
 
-namespace muduo {
 class Buffer;
-}
 
 namespace KCacheServer {
 
@@ -30,7 +28,7 @@ public:
     // Extract one complete command from buffer. Returns true if a complete
     // command was found (buffer is advanced past the consumed line).
     // Returns false if more data is needed.
-    static bool parse(muduo::Buffer* buf, Request* req);
+    static bool parse(Buffer* buf, Request* req);
 
     // Response encoders
     static std::string encodeGetResponse(const std::string& value);
