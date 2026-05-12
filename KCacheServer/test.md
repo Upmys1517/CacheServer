@@ -18,3 +18,7 @@ echo -e "PING\r\nSET foo bar\r\nGET foo\r\nSTATS\r\nQUIT\r\n" | nc localhost 999
 ./benchmark --host 127.0.0.1 --port 9999 --connections 10 --requests 100000 --keyspace 5000 --read-ratio 0.8
 
 # 6. 对比不同策略（按顺序测试 lru / lfu / arc / lruk）
+  # 分别启动不同策略的服务器，用 benchmark 对比性能
+  ./kcacheserver --port 9999 --policy lru --capacity 10000 &
+  ./benchmark --port 9999 ...
+  # 结束后 kill，换下一个策略
