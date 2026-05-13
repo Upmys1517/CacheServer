@@ -103,6 +103,7 @@ public:
 
     bool decreaseCapacity()
     {
+        std::lock_guard<std::mutex> lock(mutex_);
         if (capacity_ <= 0) return false;
         if (mainCache_.size() == capacity_) {
             evictLeastRecent();
