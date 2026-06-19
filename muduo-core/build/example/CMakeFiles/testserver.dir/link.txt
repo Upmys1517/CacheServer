@@ -1,1 +1,0 @@
-/usr/bin/c++ -rdynamic CMakeFiles/testserver.dir/testserver.cc.o -o /home/upmys/projects/CacheServer/muduo-core/example/testserver  -Wl,-rpath,/home/upmys/projects/CacheServer/muduo-core/lib /home/upmys/projects/CacheServer/muduo-core/lib/libmuduo_core.so -lpthread 

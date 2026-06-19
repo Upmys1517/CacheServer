@@ -1,3 +1,0 @@
-/home/upmys/projects/CacheServer/CacheSystem/build/CMakeFiles/main.dir
-/home/upmys/projects/CacheServer/CacheSystem/build/CMakeFiles/edit_cache.dir
-/home/upmys/projects/CacheServer/CacheSystem/build/CMakeFiles/rebuild_cache.dir
