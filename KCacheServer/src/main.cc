@@ -93,7 +93,7 @@ int main(int argc, char* argv[]) {
     }
 
     EventLoop loop;                                     // 创建事件循环（muduo 核心调度器）
-    InetAddress addr(static_cast<uint16_t>(port));     // 构建监听地址（所有网卡 + 指定端口）
+    InetAddress addr(static_cast<uint16_t>(port), "0.0.0.0");     // 构建监听地址（所有网卡 + 指定端口）
 
     // 创建缓存服务器实例，将缓存所有权转移给服务器
     KCacheServer::CacheServer server(&loop, addr, "KCacheServer",
